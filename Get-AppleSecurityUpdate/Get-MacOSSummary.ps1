@@ -24,6 +24,7 @@ $MAC_OS_LIST = @(
     @{ Version = 'v10.13'; ShortName = 'v10.13 (High Sierra)'; Pattern = 'macOS High Sierra'; }
     @{ Version = 'v10.14'; ShortName = 'v10.14 (Mojave)'; Pattern = 'macOS Mojave'; }
     @{ Version = 'v10.15'; ShortName = 'v10.15 (Catalina)'; Pattern = 'macOS Catalina'; }
+    @{ Version = 'v11'; ShortName = 'v11 (Big Sur)'; Pattern = 'macOS Big Sur'}
 )
 
 $yearStat = $UpdateHistory.ReleaseDate | Measure-Object -Maximum -Minimum
