@@ -22,7 +22,7 @@ filter ConvertTo-PSObject {
         param($obj)
 
         if ($obj -is [string]) { $obj }
-        elseif ($obj -is [System.Xml.XmlElement]) { $obj.InnerText }
+        elseif ($obj -is [System.Xml.XmlElement]) { $obj.InnerText.Trim() }
         else { $obj }
     }
 
@@ -43,7 +43,7 @@ filter ConvertTo-PSObject {
         }
         @{
             Name       = 'ReleaseDateText';
-            Expression = { Get-TextContent $_.td[2].Trim() }
+            Expression = { Get-TextContent $_.td[2] }
         }
     )
 }
