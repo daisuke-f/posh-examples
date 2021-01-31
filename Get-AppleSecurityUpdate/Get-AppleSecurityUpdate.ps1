@@ -1,7 +1,9 @@
 #requires -Version 5
 
 [CmdletBinding()]
-param()
+param(
+    [switch] $Execute = $True
+)
 
 Set-StrictMode -Version Latest
 
@@ -12,7 +14,7 @@ filter Find-HTMLTableElement {
 }
 
 filter ConvertTo-XmlObject {
-    [xml]($_.Replace('<br>', "`n").Replace('&nbsp;', ' ').Replace('&', '&amp;'))
+    [xml]($_.Replace('<br>', "`n").Replace('&nbsp;', ' ').Replace('&', '&amp;').Replace('<p>', '').Replace('</p>', ''))
 }
 
 filter ConvertTo-PSObject {
@@ -41,7 +43,7 @@ filter ConvertTo-PSObject {
         }
         @{
             Name       = 'ReleaseDateText';
-            Expression = { Get-TextContent $_.td[2] }
+            Expression = { Get-TextContent $_.td[2].Trim() }
         }
     )
 }
@@ -54,24 +56,31 @@ filter Add-ExtraProperty {
             $d = $d -replace '^(\d{1,2}) Sept (\d{4})$', '$1 Sep $2'
             $d = $d -replace '^16 May 2005 \(client\)\s+19 May 2005 \(server\)$', '16 May 2005'
 
-            [datetime]::Parse($d)
+            $date = [datetime]::new(0)
+            if([datetime]::TryParse($d, [ref]$date)) {
+                Write-Output $date
+            }
         )
     }
 }
 
+$URL_LIST = @(
+    'https://support.apple.com/HT201222' <# 2016 ~ now #>
+    'https://support.apple.com/HT209441' <# 2015 #>
+    'https://support.apple.com/HT205762' <# 2014 #>
+    'https://support.apple.com/HT205759' <# 2013 #>
+    'https://support.apple.com/HT204611' <# 2011 ~ 2012 #>
+    'https://support.apple.com/HT5165' <# 2010 #>
+    'https://support.apple.com/HT4218' <# 2008 ~ 2009 #>
+    'https://support.apple.com/HT1263' <# 2005 ~ 2007 #>
+)
+
 function main {
-    $URL_LIST = @(
-        'https://support.apple.com/HT201222' <# 2016 ~ now #>
-        'https://support.apple.com/HT209441' <# 2015 #>
-        'https://support.apple.com/HT205762' <# 2014 #>
-        'https://support.apple.com/HT205759' <# 2013 #>
-        'https://support.apple.com/HT204611' <# 2011 ~ 2012 #>
-        'https://support.apple.com/HT5165' <# 2010 #>
-        'https://support.apple.com/HT4218' <# 2008 ~ 2009 #>
-        'https://support.apple.com/HT1263' <# 2005 ~ 2007 #>
+    param(
+        $Url = $URL_LIST
     )
 
-    $URL_LIST |
+    $Url |
     ForEach-Object -Process {
         $url = $_
 
@@ -97,4 +106,6 @@ function main {
     }
 }
 
-main
+if($Execute) {
+    main
+}

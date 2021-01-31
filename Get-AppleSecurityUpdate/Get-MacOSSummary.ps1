@@ -47,7 +47,7 @@ ForEach-Object -Process {
             $count = $UpdateHistory |
             Where-Object -FilterScript {
                 ($_.AvailableFor -match $os.Pattern) -and
-                ($_.ReleaseDate.Year -eq $year)
+                (($null -ne $_.ReleaseDate) -and ($_.ReleaseDate.Year -eq $year))
             } |
             Measure-Object |
             Select-Object -ExpandProperty Count
