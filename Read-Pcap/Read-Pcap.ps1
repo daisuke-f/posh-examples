@@ -35,6 +35,56 @@ function Get-CombinedHashtable {
     return $result
 }
 
+function Get-BitsSegment {
+    param(
+        [Parameter(ValueFromPipeline, Mandatory)]
+        [byte[]]
+        $Value,
+
+        [Parameter(Mandatory)]
+        [byte[]]
+        $BitsSegment
+    )
+
+    $totalBits = 8 * ($Value | Measure-Object | Select-Object -ExpandProperty Count)
+
+    if($totalBits -ne ($BitsSegment | Measure-Object -Sum | Select-Object -ExpandProperty Sum)) {
+        $errmsg = 'Sum of BitsSegment must be equal to {0}' -f $totalBits
+        throw [ArgumentException]::new($errmsg, 'BitsSegment')
+    }
+
+    $BitsSegment |
+    ForEach-Object -Process {
+        $bits = $_
+
+        $out = 0
+        for($b=0; $b -lt $bits; $b++) {
+            $pos = $offset + $b
+            $v = ($Value[$pos -shr 3] -shr (7 - ($pos % 8))) -band 1
+            $out += [math]::Pow(2, $bits - $b - 1) * $v
+        }
+        Write-Output $out
+
+        $offset += $bits
+    }
+}
+
+function ConvertTo-NetworkByteOrder {
+    param(
+        [parameter(Mandatory, ValueFromPipeline)]
+        [byte[]]
+        $Value
+    )
+
+    $out = 0
+    for($i=0; $i -lt $Value.Count; $i++) {
+        $out *= 0x100
+        $out += $Value[$i]
+    }
+
+    return $out
+}
+
 function Read-PcapInternal {
     param(
         [Parameter(Mandatory)]
@@ -97,22 +147,36 @@ function Read-PcapInternal {
         throw [NotImplementedException]::new(('EtherType not supported: {0}' -f $macHeader.EtherType))
     }
 
+    ($ipVersion, $internetHeaderLength) = $reader.ReadBytes(1) | Get-BitsSegment -Bits 4, 4
+    ($dscp, $ecn) = $reader.ReadBytes(1) | Get-BitsSegment -Bits 6, 2
+    $totalLength = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    $identification = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    ($flags, $fragmentOffset) = ,$reader.ReadBytes(2) | Get-BitsSegment -Bits 3, 13
+
+
     $ipHeader = [Ordered]@{
-        IpVersion = $reader.ReadBytes(4)
-        InternetHeaderLength = $reader.ReadBytes(4)
-        DSCP_ECN = $reader.ReadBytes(8)
-        TotalLength = $reader.ReadInt16()
+        IpVersion = $ipVersion
+        InternetHeaderLength = $internetHeaderLength
+        DSCP = $dscp
+        ECN = $ecn
+        TotalLength = $totalLength
+        Identification = $identification
+        Flags = $flags
+        FragmentOffset = $fragmentOffset
+        TimeToLive = $reader.ReadByte()
+        Protocol = $reader.ReadByte()
+        HeaderChecksum = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+        SourceIpAddress = [IPAddress]::new($reader.ReadBytes(4))
+        DestinationIpAddress = [IPAddress]::new($reader.ReadBytes(4))
     }
 
     $tcpHeader = [Ordered]@{
-        SourcePort = $reader.ReadUInt16()
-        DestinationPort = $reader.ReadUInt16()
-        SequenceNumber = $reader.ReadUInt32()
-        AcknowledgementNumber = $reader.ReadUInt32()
-        DataOffset = $reader.ReadBytes(4)
-        Reserved = $reader.ReadBytes(3)
-        Flags = $reader.ReadBytes(9)
-        WindowSize = $reader.ReadUInt16()
+        SourcePort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+        DestinationPort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+        SequenceNumber = ,$reader.ReadBytes(4) | ConvertTo-NetworkByteOrder
+        AcknowledgementNumber = ,$reader.ReadBytes(4) | ConvertTo-NetworkByteOrder
+        DataOffset_Reserved_Flags = $reader.ReadBytes(2)
+        WindowSize = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
     }
 
     Write-Output ([PSCustomObject](Get-CombinedHashtable $fileHeader $packetHeader $macHeader $ipHeader $tcpHeader))
