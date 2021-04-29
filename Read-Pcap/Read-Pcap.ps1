@@ -1,8 +1,25 @@
 #requires -Version 5
-[CmdletBinding()]
+
+<#
+.SYNOPSIS
+Parses a pcap file and outputs its contents in useful object format on Powershell.
+
+.PARAMETER Path
+Specifies path to the pcap file to be read.
+
+.PARAMETER UnitTestMode
+This switch is used when it's under unit testing. Not useful for any other purpose.
+
+.LINK
+https://pcapng.github.io/pcapng/draft-gharris-opsawg-pcap.html
+#>
+[CmdletBinding(DefaultParameterSetName = 'Default')]
 param(
-    [parameter(mandatory)]
-    $Path
+    [Parameter(ParameterSetName = 'Default', Mandatory = $true, Position = 0)]
+    $Path,
+
+    [Parameter(ParameterSetName = 'UnitTest', Mandatory = $true)]
+    [switch] $UnitTestMode
 )
 
 function Get-CombinedHashtable {
@@ -18,10 +35,12 @@ function Get-CombinedHashtable {
     return $result
 }
 
-try {
-    $stream = [IO.File]::OpenRead($Path)
-
-    $reader = [IO.BinaryReader]::new($stream)
+function Read-PcapInternal {
+    param(
+        [Parameter(Mandatory)]
+        [IO.BinaryReader]
+        $Reader
+    )
 
     $fileHeader = [Ordered]@{
         MagicNumber     = $reader.ReadInt32()
@@ -39,11 +58,11 @@ try {
     } elseif($fileHeader.MagicNumber -eq 0xa1b23c4d) {
         $timeUnit = 'n'
     } else {
-        throw [System.IO.FileFormatException]::new('This is not a PCAP file.')
+        throw [IO.FileFormatException]::new('This is not a PCAP file.')
     }
 
     if($fileHeader.LinkType -ne 1) {
-        throw [System.NotImplementedException]::new(('Link type is not supported: {0}' -f $fileHeader.LinkType))
+        throw [NotImplementedException]::new(('Link type is not supported: {0}' -f $fileHeader.LinkType))
     }
 
     # Write-Output ([PSCustomObject]$fileHeader)
@@ -59,7 +78,7 @@ try {
             if($timeUnit -eq 'm') {
                 $d = $d.AddMilliseconds($fraction)
             } else {
-                throw [System.NotImplementedException]::new()
+                throw [NotImplementedException]::new()
             }
 
             Write-Output $d
@@ -69,13 +88,13 @@ try {
     }
 
     $macHeader = [Ordered]@{
-        DestinationMacAddress = $reader.ReadBytes(6)
-        SourceMacAddress = $reader.ReadBytes(6)
+        DestinationMacAddress = [Net.NetworkInformation.PhysicalAddress]::new($reader.ReadBytes(6))
+        SourceMacAddress = [Net.NetworkInformation.PhysicalAddress]::new($reader.ReadBytes(6))
         EtherType = $reader.ReadInt16()
     }
 
     if($macHeader.EtherType -ne 8) {
-        throw [System.NotImplementedException]::new(('EtherType not supported: {0}' -f $macHeader.EtherType))
+        throw [NotImplementedException]::new(('EtherType not supported: {0}' -f $macHeader.EtherType))
     }
 
     $ipHeader = [Ordered]@{
@@ -86,24 +105,36 @@ try {
     }
 
     $tcpHeader = [Ordered]@{
-        SourcePort = $reader.ReadInt16()
-        DestinationPort = $reader.ReadInt16()
-        SequenceNumber = $reader.ReadInt32()
-        AcknowledgementNumber = $reader.ReadInt32()
+        SourcePort = $reader.ReadUInt16()
+        DestinationPort = $reader.ReadUInt16()
+        SequenceNumber = $reader.ReadUInt32()
+        AcknowledgementNumber = $reader.ReadUInt32()
         DataOffset = $reader.ReadBytes(4)
         Reserved = $reader.ReadBytes(3)
         Flags = $reader.ReadBytes(9)
-        WindowSize = $reader.ReadInt16()
+        WindowSize = $reader.ReadUInt16()
     }
 
-    Write-Output ([PSCustomObject](Get-CombinedHashtable $packetHeader $macHeader $ipHeader $tcpHeader))
+    Write-Output ([PSCustomObject](Get-CombinedHashtable $fileHeader $packetHeader $macHeader $ipHeader $tcpHeader))
+}
 
-    $reader.Close()
-    $stream.Close()
+function main {
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        $reader = [IO.BinaryReader]::new($stream)
 
-} catch {
-    throw
-} finally {
-    if($null -ne $reader) { $reader.Dispose() }
-    if($null -ne $stream) { $stream.Dispose() }
+        Read-PcapInternal -Reader $reader
+
+        $reader.Close()
+        $stream.Close()
+    } catch {
+        throw
+    } finally {
+        if($null -ne $reader) { $reader.Dispose() }
+        if($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+if(-Not $UnitTestMode) {
+    main
 }
