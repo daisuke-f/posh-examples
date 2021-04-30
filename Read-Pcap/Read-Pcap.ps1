@@ -22,6 +22,14 @@ param(
     [switch] $UnitTestMode
 )
 
+enum EtherType {
+    IPv4 = 0x0800
+}
+
+enum IPProtocol {
+    TCP = 0x06
+}
+
 function Get-CombinedHashtable {
     $result = [Ordered]@{}
 
@@ -85,9 +93,8 @@ function ConvertTo-NetworkByteOrder {
     return $out
 }
 
-function Read-PcapInternal {
+function Read-PcapFileHeader {
     param(
-        [Parameter(Mandatory)]
         [IO.BinaryReader]
         $Reader
     )
@@ -103,19 +110,20 @@ function Read-PcapInternal {
         Fcs             = $reader.ReadInt16()
     }
 
-    if($fileHeader.MagicNumber -eq 0xa1b2c3d4) {
-        $timeUnit = 'm'
-    } elseif($fileHeader.MagicNumber -eq 0xa1b23c4d) {
-        $timeUnit = 'n'
-    } else {
+    if(@(0xa1b2c3d4, 0xa1b23c4d) -notcontains $fileHeader.MagicNumber) {
         throw [IO.FileFormatException]::new('This is not a PCAP file.')
     }
 
-    if($fileHeader.LinkType -ne 1) {
-        throw [NotImplementedException]::new(('Link type is not supported: {0}' -f $fileHeader.LinkType))
-    }
+    return $fileHeader
+}
 
-    # Write-Output ([PSCustomObject]$fileHeader)
+function Read-PcapPacketHeader {
+    param(
+        [IO.BinaryReader]
+        $Reader,
+        [switch]
+        $TimeIsMillisecond
+    )
 
     $packetHeader = [Ordered]@{
         Timestamp   = $(
@@ -125,7 +133,7 @@ function Read-PcapInternal {
             $d = $d.AddSeconds($seconds)
 
             $fraction = $reader.ReadInt32()
-            if($timeUnit -eq 'm') {
+            if($TimeIsMillisecond) {
                 $d = $d.AddMilliseconds($fraction)
             } else {
                 throw [NotImplementedException]::new()
@@ -137,22 +145,35 @@ function Read-PcapInternal {
         OriginalPacketLength = $reader.ReadInt32()
     }
 
+    return $packetHeader
+}
+
+function Read-MacHeader {
+    param(
+        [IO.BinaryReader]
+        $Reader
+    )
+
     $macHeader = [Ordered]@{
         DestinationMacAddress = [Net.NetworkInformation.PhysicalAddress]::new($reader.ReadBytes(6))
         SourceMacAddress = [Net.NetworkInformation.PhysicalAddress]::new($reader.ReadBytes(6))
-        EtherType = $reader.ReadInt16()
+        EtherType = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
     }
 
-    if($macHeader.EtherType -ne 8) {
-        throw [NotImplementedException]::new(('EtherType not supported: {0}' -f $macHeader.EtherType))
-    }
+    return $macHeader
+}
+
+function Read-IPHeader {
+    param(
+        [IO.BinaryReader]
+        $Reader
+    )
 
     ($ipVersion, $internetHeaderLength) = $reader.ReadBytes(1) | Get-BitsSegment -Bits 4, 4
     ($dscp, $ecn) = $reader.ReadBytes(1) | Get-BitsSegment -Bits 6, 2
     $totalLength = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
     $identification = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
     ($flags, $fragmentOffset) = ,$reader.ReadBytes(2) | Get-BitsSegment -Bits 3, 13
-
 
     $ipHeader = [Ordered]@{
         IpVersion = $ipVersion
@@ -168,18 +189,99 @@ function Read-PcapInternal {
         HeaderChecksum = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
         SourceIpAddress = [IPAddress]::new($reader.ReadBytes(4))
         DestinationIpAddress = [IPAddress]::new($reader.ReadBytes(4))
+        IPOptions = $null
     }
+
+    $ipHeader.IPOptions = $reader.ReadBytes($ipHeader.InternetHeaderLength - 5)
+
+    return $ipHeader
+}
+
+function Read-TCPHeader {
+    param(
+        [IO.BinaryReader]
+        $Reader
+    )
+
+    $sourcePort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    $destinationPort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    $sequenceNumber = ,$reader.ReadBytes(4) | ConvertTo-NetworkByteOrder
+    $acknowledgementNumber = ,$reader.ReadBytes(4) | ConvertTo-NetworkByteOrder
+    ($dataOffset, $reserved, $ns) = $reader.ReadByte() | Get-BitsSegment -Bits 4, 3, 1
+    ($cwr, $ece, $urg, $ack, $psh, $rst, $syn, $fin) = $reader.ReadByte() | Get-BitsSegment -Bits 1, 1, 1, 1, 1, 1, 1, 1
 
     $tcpHeader = [Ordered]@{
-        SourcePort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
-        DestinationPort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
-        SequenceNumber = ,$reader.ReadBytes(4) | ConvertTo-NetworkByteOrder
-        AcknowledgementNumber = ,$reader.ReadBytes(4) | ConvertTo-NetworkByteOrder
-        DataOffset_Reserved_Flags = $reader.ReadBytes(2)
+        SourcePort = $sourcePort
+        DestinationPort = $destinationPort
+        SequenceNumber = $sequenceNumber
+        AcknowledgementNumber = $acknowledgementNumber
         WindowSize = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+        Checksum = $reader.ReadBytes(2)
+        UrgentPointer = $reader.ReadBytes(2)
+        DataOffset = $dataOffset
+        Reserved = $reserved
+        NS = $ns
+        CWR = $cwr
+        ECE = $ece
+        URG = $urg
+        ACK = $ack
+        PSH = $psh
+        RST = $rst
+        SYN = $syn
+        FIN = $fin
+        TCPOptions = $null
     }
 
-    Write-Output ([PSCustomObject](Get-CombinedHashtable $fileHeader $packetHeader $macHeader $ipHeader $tcpHeader))
+    $tcpHeader.TCPOptions = $reader.ReadBytes(4 * ($tcpHeader.DataOffset-5))
+
+    return $tcpHeader
+}
+
+function Read-PcapInternal {
+    param(
+        [Parameter(Mandatory)]
+        [IO.BinaryReader]
+        $Reader
+    )
+
+    $pcap = [PSCustomObject]@{
+        Header = Read-PcapFileHeader -Reader $Reader
+        Packets = @()
+    }
+
+    if($pcap.Header.LinkType -ne 1) {
+        throw [NotImplementedException]::new(('Link type is not supported: {0}' -f $fileHeader.LinkType))
+    }
+
+    while(0 -le $Reader.PeekChar()) {
+
+        $packet = @{
+            Header = Read-PcapPacketHeader -Reader $Reader -TimeIsMillisecond ($pcap.Header.MagicNumber -eq 0xa1b2c3d4)
+        }
+
+        $macHeader = Read-MacHeader -Reader $Reader
+        $packet.Mac = [PSCustomObject]$macHeader
+
+        if($macHeader.EtherType -ne [EtherType]::IPv4) {
+            throw [NotImplementedException]::new(('EtherType not supported: {0}' -f $macHeader.EtherType))
+        }
+
+        $ipHeader = Read-IPHeader -Reader $Reader
+        $packet.IP = [PSCustomObject]$ipHeader
+
+        if($ipHeader.Protocol -ne [IPProtocol]::TCP) {
+            throw [NotImplementedException]::new(('IP Protocol not supported: {0}' -f $ipHeader.Protocol))
+        }
+
+        $tcpHeader = Read-TCPHeader -Reader $Reader
+        $packet.TCP = [PSCustomObject]$tcpHeader
+
+        $packet.Data = $Reader.ReadBytes($ipHeader.TotalLength - 4 * $ipHeader.InternetHeaderLength - 4 * $tcpHeader.DataOffset)
+
+        $pcap.Packets += [PSCustomObject]$packet
+    }
+    
+    Write-Output ($pcap)
 }
 
 function main {
