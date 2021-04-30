@@ -54,16 +54,21 @@ function Get-BitsSegment {
         $BitsSegment
     )
 
-    $totalBits = 8 * ($Value | Measure-Object | Select-Object -ExpandProperty Count)
-
-    if($totalBits -ne ($BitsSegment | Measure-Object -Sum | Select-Object -ExpandProperty Sum)) {
+    $totalBits = 8 * $Value.Count
+    $actualBits = 0
+    for($i=0; $i -lt $BitsSegment.Count; $i++) {
+        $actualBits += $BitsSegment[$i]
+    }
+    
+    if($totalBits -ne $actualBits) {
         $errmsg = 'Sum of BitsSegment must be equal to {0}' -f $totalBits
         throw [ArgumentException]::new($errmsg, 'BitsSegment')
     }
 
-    $BitsSegment |
-    ForEach-Object -Process {
-        $bits = $_
+    $outlist = @()
+
+    for($i=0; $i -lt $BitsSegment.Count; $i++) {
+        $bits = $BitsSegment[$i]
 
         $out = 0
         for($b=0; $b -lt $bits; $b++) {
@@ -71,10 +76,12 @@ function Get-BitsSegment {
             $v = ($Value[$pos -shr 3] -shr (7 - ($pos % 8))) -band 1
             $out += [math]::Pow(2, $bits - $b - 1) * $v
         }
-        Write-Output $out
+        $outlist += $out
 
         $offset += $bits
     }
+
+    return $outlist
 }
 
 function ConvertTo-NetworkByteOrder {
