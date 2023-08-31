@@ -55,7 +55,7 @@ function Get-FitbitWebApiToken {
         return $null
     }
 
-    if($code -match '^https://.*\?code=(.*)#_=_$') {
+    if($code -match '\?code=(.*)#_=_$') {
         $code = $Matches[1]
         Write-Verbose "Extracted code from URL: $code"
     }
