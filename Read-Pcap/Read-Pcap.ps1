@@ -28,6 +28,7 @@ enum EtherType {
 
 enum IPProtocol {
     TCP = 0x06
+    UDP = 0x11
 }
 
 function Get-CombinedHashtable {
@@ -244,6 +245,27 @@ function Read-TCPHeader {
     return $tcpHeader
 }
 
+function Read-UDPHeader {
+    param(
+        [IO.BinaryReader]
+        $Reader
+    )
+
+    $sourcePort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    $destinationPort = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    $length = ,$reader.ReadBytes(2) | ConvertTo-NetworkByteOrder
+    $checksum = $reader.ReadBytes(2)
+
+    $udpHeader = [Ordered]@{
+        SourcePort = $sourcePort
+        DestinationPort = $destinationPort
+        Length = $length
+        Checksum = $checksum
+    }
+
+    return $udpHeader
+}
+
 function Read-PcapInternal {
     param(
         [Parameter(Mandatory)]
@@ -260,30 +282,51 @@ function Read-PcapInternal {
         throw [NotImplementedException]::new(('Link type is not supported: {0}' -f $fileHeader.LinkType))
     }
 
-    while(0 -le $Reader.PeekChar()) {
+    while ($Reader.BaseStream.Position -lt $Reader.BaseStream.Length) {
 
-        $packet = @{
+        $packet = [Ordered]@{
             Header = Read-PcapPacketHeader -Reader $Reader -TimeIsMillisecond ($pcap.Header.MagicNumber -eq 0xa1b2c3d4)
         }
 
+        $startPos = $Reader.BaseStream.Position
+        
         $macHeader = Read-MacHeader -Reader $Reader
         $packet.Mac = [PSCustomObject]$macHeader
 
         if($macHeader.EtherType -ne [EtherType]::IPv4) {
-            throw [NotImplementedException]::new(('EtherType not supported: 0x{0:X2} at line {1}' -f $macHeader.EtherType, $pcap.Packets.Count+1))
+            throw [NotImplementedException]::new(('EtherType not supported: 0x{0:X2} at line {1}' -f $macHeader.EtherType, ($pcap.Packets.Count+1)))
         }
 
         $ipHeader = Read-IPHeader -Reader $Reader
         $packet.IP = [PSCustomObject]$ipHeader
 
-        if($ipHeader.Protocol -ne [IPProtocol]::TCP) {
-            throw [NotImplementedException]::new(('IP Protocol not supported: {0}' -f $ipHeader.Protocol))
+        switch($ipHeader.Protocol) {
+            ([IPProtocol]::TCP.value__) {
+                $tcpHeader = Read-TCPHeader -Reader $Reader
+                $packet.TCP = [PSCustomObject]$tcpHeader
+
+                $packet.Data = $Reader.ReadBytes($ipHeader.TotalLength - 4 * $ipHeader.InternetHeaderLength - 4 * $tcpHeader.DataOffset)
+            }
+
+            ([IPProtocol]::UDP.value__) {
+                $udpHeader = Read-UDPHeader -Reader $Reader
+                $packet.UDP = [PSCustomObject]$udpHeader
+
+                $packet.Data = $Reader.ReadBytes($ipHeader.TotalLength - 4 * $ipHeader.InternetHeaderLength - 8)
+            }
+
+            default {
+                Write-Warning ('IP Protocol not supported: 0x{0:X2} at line {1}' -f $ipHeader.Protocol, ($pcap.Packets.Count+1))
+            }
         }
 
-        $tcpHeader = Read-TCPHeader -Reader $Reader
-        $packet.TCP = [PSCustomObject]$tcpHeader
+        $tailerLength = $packet.Header.CapturedPacketLength - $Reader.BaseStream.Position + $startPos
 
-        $packet.Data = $Reader.ReadBytes($ipHeader.TotalLength - 4 * $ipHeader.InternetHeaderLength - 4 * $tcpHeader.DataOffset)
+        if($tailerLength -lt 0) {
+            throw [ArgumentException]::new('CapturedPacketLength is less than the length of the packet header.')
+        }
+
+        $packet.Trailer = $Reader.ReadBytes($tailerLength)
 
         $pcap.Packets += [PSCustomObject]$packet
     }
