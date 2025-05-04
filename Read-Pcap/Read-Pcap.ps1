@@ -270,7 +270,7 @@ function Read-PcapInternal {
         $packet.Mac = [PSCustomObject]$macHeader
 
         if($macHeader.EtherType -ne [EtherType]::IPv4) {
-            throw [NotImplementedException]::new(('EtherType not supported: {0}' -f $macHeader.EtherType))
+            throw [NotImplementedException]::new(('EtherType not supported: 0x{0:X2} at line {1}' -f $macHeader.EtherType, $pcap.Packets.Count+1))
         }
 
         $ipHeader = Read-IPHeader -Reader $Reader
